@@ -1,0 +1,11 @@
+[package]
+name = "fungible_token"
+version = "1.0.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = "4.1"
+near-contract-standards = "4.1"
