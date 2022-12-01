@@ -18,8 +18,8 @@ test:
 	cargo run
 
 lint:
-	cd contracts/token && cargo fmt && cargo clippy && cd -;\
-	cd contracts/defi && cargo fmt && cargo clippy;
+	cd contracts/token && cargo fmt && cargo clippy --target wasm32-unknown-unknown && cd -;\
+	cd contracts/defi && cargo fmt && cargo clippy --target wasm32-unknown-unknown;
 
 
 clean:

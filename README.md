@@ -69,7 +69,8 @@ near view $CONTRACT_NAME ft_metadata
 
 Deploying the `TokenB`  and `Defi` contracts are same as above steps.
 
-Transfer Example
+
+Transfer
 ---------------
 
 Let's set up an account to transfer some tokens to. These account will be a sub-account of the NEAR account you logged in with.
@@ -92,5 +93,20 @@ Transfer tokens to Bob from the contract that minted these fungible tokens, exac
 
 Check the balance of Bob again with the command from before and it will now return `19`.
 
-## Testing
+Swap
+--------------------
+
+    near call $SWAP_ID swap_token '{"symbol": "TokenA", "amount": "10"}' --accountId bob.$ID
+
+Testing
+---------------
+
 `make test`
+
+TODO
+---------------
+
+- [ ] transfer TokenB to user's account
+- [ ] split the Defi impl into small trait, associate with different permissions and roles
+- [ ] tidy up integration test
+- [ ] details swap steps in readme

@@ -4,7 +4,6 @@ Some hypothetical DeFi contract that will do smart things with the transferred t
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_contract_standards::fungible_token::metadata::ext_ft_metadata;
 use near_contract_standards::fungible_token::metadata::FungibleTokenMetadata;
-use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
 use near_contract_standards::storage_management::StorageBalance;
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::collections::LookupMap;
@@ -13,10 +12,11 @@ use near_sdk::{
     env, ext_contract, log, near_bindgen, serde, AccountId, Balance, Gas, PanicOnDefault,
     PromiseOrValue,
 };
-use near_sdk::{require, BorshStorageKey, Promise, PromiseError};
+use near_sdk::{BorshStorageKey, Promise, PromiseError};
 use serde::{Deserialize, Serialize};
 
 pub const TGAS: u64 = 1_000_000_000_000;
+const INITIAL_BALANCE: Balance = 250_000_000_000_000_000_000_000;
 
 #[derive(BorshStorageKey, BorshSerialize)]
 pub enum StoreKey {
@@ -43,6 +43,9 @@ pub struct TokenInfo {
 pub struct DeFi {
     // owner address
     owner_id: AccountId,
+    address_a: AccountId,
+    address_b: AccountId,
+    ratio: U128,
     // (symbol, token_info) map
     tokens: LookupMap<String, TokenInfo>,
     // (token_address, ticker) map
@@ -60,6 +63,15 @@ pub trait External {
     ) -> StorageBalance;
 }
 
+fn create_subaccount(prefix: &str) -> Promise {
+    let subaccount_id =
+        AccountId::new_unchecked(format!("{}.{}", prefix, env::current_account_id()));
+    Promise::new(subaccount_id)
+        .create_account()
+        .add_full_access_key(env::signer_account_pk())
+        .transfer(INITIAL_BALANCE)
+}
+
 #[near_bindgen]
 impl DeFi {
     #[init]
@@ -69,10 +81,17 @@ impl DeFi {
         let mut tickers = LookupMap::new(StoreKey::Decimals);
         tickers.insert(&token_a.address, &token_a.ticker);
         tickers.insert(&token_b.address, &token_b.ticker);
+        create_subaccount("token_a");
+        create_subaccount("token_b");
+        let address_a = AccountId::new_unchecked(format!("token_a.{}", env::current_account_id()));
+        let address_b = AccountId::new_unchecked(format!("token_b.{}", env::current_account_id()));
         Self {
             owner_id,
             tokens,
             tickers,
+            address_a,
+            address_b,
+            ratio: U128(0),
             pending: false,
         }
     }
@@ -82,7 +101,7 @@ impl DeFi {
         let gas = Gas(5 * TGAS);
         // get the token meta data and store the token
         let p1: Promise = ext_ft_metadata::ext(token_address.clone())
-            .with_attached_deposit(1)
+            // .with_attached_deposit(1)
             .with_static_gas(gas)
             .ft_metadata();
         let p2 = Self::ext(env::current_account_id())
@@ -122,17 +141,30 @@ impl DeFi {
         token_info.contract_address
     }
 
+    #[inline]
+    fn get_token_address(&self, symbol: &str) -> AccountId {
+        match symbol {
+            "TokenA" => self.address_a.clone(),
+            "TokenB" => self.address_b.clone(),
+            _ => unreachable!("only support TokenA and TokenB"),
+        }
+    }
+
     /// get the how many tokens of owner_id
     /// symbol: TokenA / TokenB
     /// return:
     #[private]
-    pub fn get_pool_token(&mut self, symbol: String) -> PromiseOrValue<Balance> {
+    pub fn get_swap_token(&mut self, symbol: String) -> PromiseOrValue<Balance> {
+        let address = match symbol.as_str() {
+            "TokenA" => self.address_a.clone(),
+            _ => self.address_b.clone(),
+        };
         let gas = Gas(5 * TGAS);
         let token_address = self.get_contract_address(&symbol);
         let p = ext_ft_core::ext(token_address)
-            .with_attached_deposit(1)
+            // .with_attached_deposit(1)
             .with_static_gas(gas)
-            .ft_balance_of(self.owner_id.clone());
+            .ft_balance_of(address);
         p.into()
     }
 
@@ -166,23 +198,25 @@ impl DeFi {
         let gas = Gas(5 * TGAS);
         let token_info = self.tokens.get(&symbol).unwrap();
         let token_info_target = self.tokens.get(&symbol_target).unwrap();
-        let token_address = token_info.contract_address;
-        let token_address_target = token_info_target.contract_address;
+        let contract_address = token_info.contract_address;
+        let contract_address_target = token_info_target.contract_address;
+        let token_address = self.get_token_address(&symbol);
+        let token_address_target = self.get_token_address(&symbol_target);
 
         self.pending = true;
 
         // calculate how many balance should return to user
-        let promise_token_1 = ext_ft_core::ext(token_address.clone())
-            .with_attached_deposit(1)
+        let promise_token_1 = ext_ft_core::ext(contract_address.clone())
+            // .with_attached_deposit(1)
             .with_static_gas(gas)
             .ft_balance_of(self.owner_id.clone());
-        let promise_token_2 = ext_ft_core::ext(token_address_target.clone())
-            .with_attached_deposit(1)
+        let promise_token_2 = ext_ft_core::ext(contract_address_target.clone())
+            // .with_attached_deposit(1)
             .with_static_gas(gas)
             .ft_balance_of(self.owner_id.clone());
 
         let promise_user_withdraw_balance = Self::ext(env::current_account_id())
-            .with_attached_deposit(1)
+            // .with_attached_deposit(1)
             .with_static_gas(gas)
             .calculate_target_token(amount);
 
@@ -190,16 +224,16 @@ impl DeFi {
             .and(promise_token_2)
             .then(promise_user_withdraw_balance);
 
-        // transfer token to owner_id
-        let promise_deposit: Promise = ext_ft_core::ext(token_address.clone())
+        // transfer token to token_address
+        let promise_deposit: Promise = ext_ft_core::ext(contract_address.clone())
             .with_attached_deposit(1)
             .with_static_gas(gas)
-            .ft_transfer(self.owner_id.clone(), amount, None);
+            .ft_transfer(token_address, amount, None);
 
         // withdraw from the owner_id
         let promise_swap: Promise = Self::ext(env::current_account_id())
             .with_static_gas(gas)
-            .swap_token_withdraw(token_address_target);
+            .swap_token_withdraw(contract_address_target, env::current_account_id());
 
         promise_withdraw_balance
             .and(promise_deposit)
@@ -207,9 +241,11 @@ impl DeFi {
             .into()
     }
 
+    /// transfer token from `contract_address_target` to `user_account_id`
     pub fn swap_token_withdraw(
         &mut self,
-        token_address_target: AccountId,
+        contract_address_target: AccountId,
+        user_account_id: AccountId,
         #[callback_result] withdraw_balance: Result<U128, PromiseError>,
         #[callback_result] deposit_result: Result<(), PromiseError>,
     ) -> bool {
@@ -236,13 +272,14 @@ impl DeFi {
                 // let promise_deposit = ext_ft_core::ext(token_address_target)
                 //     .with_attached_deposit(1)
                 //     .with_static_gas(gas)
-                //     .ft_transfer(self.owner_id.clone(), amount, None);
+                //     .ft_transfer(user_account_id, amount, None);
                 self.pending = false;
                 true
             }
         }
     }
 
+    /// if user deposit TokenA, calculate how many TokenB that will send to user
     pub fn calculate_target_token(
         &self,
         user_balance: U128,
@@ -271,34 +308,68 @@ impl DeFi {
         env::panic_str("get pool token failed")
     }
 
-    /// withdraw balance, so owner can reset ratio
+    /// withdraw balance to owner id, so that to change the ratio
     #[private]
-    pub fn withdraw_token(
-        &self,
-        symbol: String,
-        amount: U128,
-        receiver_account: AccountId,
-    ) -> PromiseOrValue<U128> {
-        require!(env::current_account_id() == self.owner_id);
-        let gas = Gas(5 * TGAS);
-        let token_address = self.get_contract_address(&symbol);
-        let promise_withdraw: Promise = ext_ft_core::ext(token_address.clone())
-            .with_attached_deposit(1)
-            .with_static_gas(gas)
-            .ft_transfer_call(receiver_account, amount, None, "".into());
-        promise_withdraw.into()
+    pub fn withdraw_token(&self, symbol: String, amount: U128) -> PromiseOrValue<U128> {
+        todo!("withdraw token from address_a or address_b")
+        // let gas = Gas(5 * TGAS);
+        // let token_address = self.get_contract_address(&symbol);
+        // let promise_withdraw: Promise = ext_ft_core::ext(token_address.clone())
+        //     .with_attached_deposit(1)
+        //     .with_static_gas(gas)
+        //     .ft_transfer_call(receiver_account, amount, None, "".into());
+        // promise_withdraw.into()
     }
 
-    // get balance ratio
-    // #[private]
-    // pub fn get_token_ratio( &self ) -> PromiseOrValue<U128> {
-    //     let promise_token_1 = ext_ft_core::ext(token_address.clone())
-    //         .with_attached_deposit(1)
-    //         .with_static_gas(gas)
-    //         .ft_balance_of(self.owner_id.clone());
-    //     let promise_token_2 = ext_ft_core::ext(token_address_target.clone())
-    //         .with_attached_deposit(1)
-    //         .with_static_gas(gas)
-    //         .ft_balance_of(self.owner_id.clone());
-    // }
+    /// deposit token so that to change the ratio
+    #[private]
+    pub fn deposit_token(&self, symbol: String, amount: U128) -> PromiseOrValue<()> {
+        let gas = Gas(5 * TGAS);
+        let contract_address = self.get_contract_address(&symbol);
+        let token_address = self.get_token_address(&symbol);
+
+        let promise_deposit: Promise = ext_ft_core::ext(contract_address)
+            .with_attached_deposit(1)
+            .with_static_gas(gas)
+            .ft_transfer(token_address, amount, None);
+        promise_deposit.into()
+    }
+
+    /// get balance ratio
+    #[private]
+    pub fn get_token_ratio(&self) -> PromiseOrValue<U128> {
+        let gas = Gas(5 * TGAS);
+        let contract_address_a = self.get_contract_address(&"TokenA".to_string());
+        let contract_address_b = self.get_contract_address(&"TokenB".to_string());
+        let promise_token_a = ext_ft_core::ext(contract_address_a)
+            .with_static_gas(gas)
+            .ft_balance_of(self.address_a.clone());
+        let promise_token_b = ext_ft_core::ext(contract_address_b)
+            .with_static_gas(gas)
+            .ft_balance_of(self.address_b.clone());
+        let promise_calculate_ratio = Self::ext(env::current_account_id())
+            .with_static_gas(gas)
+            .do_calculate_ratio();
+        promise_token_a
+            .and(promise_token_b)
+            .then(promise_calculate_ratio)
+            .into()
+    }
+
+    /// return  BalanceA * BalanceB
+    pub fn do_calculate_ratio(
+        &self,
+        #[callback_result] balance_a: Result<U128, PromiseError>,
+        #[callback_result] balance_b: Result<U128, PromiseError>,
+    ) -> U128 {
+        if let (Ok(balance_a), Ok(balance_b)) = (balance_a, balance_b) {
+            if let Some(result) = Balance::from(balance_a).checked_mul(Balance::from(balance_b)) {
+                U128::from(result)
+            } else {
+                env::panic_str("ratio is too large")
+            }
+        } else {
+            env::panic_str("get balance failed")
+        }
+    }
 }

@@ -48,6 +48,7 @@ impl Contract {
         total_supply: U128,
         symbol: String,
         token_name: String,
+        decimals: u8,
     ) -> Self {
         Self::new(
             owner_id,
@@ -59,7 +60,7 @@ impl Contract {
                 icon: None,
                 reference: None,
                 reference_hash: None,
-                decimals: 24,
+                decimals,
             },
         )
     }
